@@ -1,0 +1,487 @@
+﻿<Window x:Class="ChatClient.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+
+        Title="ChatLab"
+        Width="1100"
+        Height="700"
+        MinWidth="900"
+        MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F7FA">
+
+    <Grid>
+
+        <!-- ================================================= -->
+        <!-- MAIN LAYOUT                                       -->
+        <!-- ================================================= -->
+
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="250"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+
+        <!-- ================================================= -->
+        <!-- SIDEBAR                                            -->
+        <!-- ================================================= -->
+
+        <Border Grid.Column="0"
+                Background="#202225">
+
+            <Grid Margin="20">
+
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+
+                <!-- APP HEADER -->
+
+                <StackPanel Grid.Row="0"
+                            Margin="0,0,0,30">
+
+                    <TextBlock
+                        Text="ChatLab"
+                        Foreground="White"
+                        FontSize="24"
+                        FontWeight="Bold"/>
+
+                    <TextBlock
+                        Text="Networking Lab 1"
+                        Foreground="#8E9297"
+                        FontSize="12"
+                        Margin="0,4,0,0"/>
+
+                </StackPanel>
+
+
+                <!-- CHANNEL -->
+
+                <StackPanel Grid.Row="1"
+                            Margin="0,0,0,25">
+
+                    <TextBlock
+                        Text="CHANNEL"
+                        Foreground="#8E9297"
+                        FontSize="11"
+                        FontWeight="Bold"
+                        Margin="0,0,0,8"/>
+
+                    <Border
+                        Background="#34373C"
+                        CornerRadius="6"
+                        Padding="10">
+
+                        <TextBlock
+                            Text="General Chat"
+                            Foreground="White"
+                            FontSize="14"/>
+
+                    </Border>
+
+                </StackPanel>
+
+
+                <!-- SIDEBAR CONTENT -->
+
+                <ScrollViewer
+                    Grid.Row="2"
+                    VerticalScrollBarVisibility="Auto">
+
+                    <StackPanel>
+
+                        <!-- ONLINE -->
+
+                        <TextBlock
+                            Text="ONLINE"
+                            Foreground="#8E9297"
+                            FontSize="11"
+                            FontWeight="Bold"
+                            Margin="0,0,0,8"/>
+
+                        <!--
+                            IMPORTANT:
+                            ONLY ONE OnlineUsersPanel
+                        -->
+
+                        <StackPanel
+                            x:Name="OnlineUsersPanel"
+                            Margin="0,0,0,25">
+
+                            <TextBlock
+                                Text="Not connected"
+                                Foreground="#72767D"
+                                FontSize="13"/>
+
+                        </StackPanel>
+
+
+                        <!-- CURRENT USER -->
+
+                        <TextBlock
+                            Text="CURRENT USER"
+                            Foreground="#8E9297"
+                            FontSize="11"
+                            FontWeight="Bold"
+                            Margin="0,0,0,8"/>
+
+                        <TextBox
+                            x:Name="UsernameTextBox"
+                            Text="User"
+                            Height="38"
+                            Padding="10"
+                            Background="#2F3136"
+                            Foreground="White"
+                            BorderBrush="#40444B"
+                            BorderThickness="1"
+                            FontSize="13"/>
+
+                    </StackPanel>
+
+                </ScrollViewer>
+
+
+                <!-- CONNECT / DISCONNECT -->
+
+                <StackPanel Grid.Row="3">
+
+                    <Button
+                        x:Name="ConnectButton"
+                        Content="Connect"
+                        Height="40"
+                        Background="#6C4AB6"
+                        Foreground="White"
+                        BorderThickness="0"
+                        FontWeight="SemiBold"
+                        Click="ConnectButton_Click"/>
+
+                    <Button
+                        x:Name="DisconnectButton"
+                        Content="Disconnect"
+                        Height="40"
+                        Margin="0,8,0,0"
+                        Background="#ED4245"
+                        Foreground="White"
+                        BorderThickness="0"
+                        FontWeight="SemiBold"
+                        Click="DisconnectButton_Click"
+                        Visibility="Collapsed"/>
+
+                </StackPanel>
+
+            </Grid>
+
+        </Border>
+
+
+        <!-- ================================================= -->
+        <!-- MAIN CONTENT                                       -->
+        <!-- ================================================= -->
+
+        <Grid Grid.Column="1"
+              Background="#F5F7FA">
+
+            <Grid.RowDefinitions>
+                <RowDefinition Height="70"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="80"/>
+            </Grid.RowDefinitions>
+
+
+            <!-- ================================================= -->
+            <!-- CHAT HEADER                                        -->
+            <!-- ================================================= -->
+
+            <Border
+                Grid.Row="0"
+                Background="White"
+                BorderBrush="#E5E7EB"
+                BorderThickness="0,0,0,1">
+
+                <Grid Margin="25,0">
+
+                    <StackPanel
+                        VerticalAlignment="Center">
+
+                        <TextBlock
+                            Text="General Chat"
+                            FontSize="18"
+                            FontWeight="Bold"
+                            Foreground="#202225"/>
+
+                        <TextBlock
+                            x:Name="StatusTextBlock"
+                            Text="Disconnected"
+                            Foreground="#72767D"
+                            FontSize="12"
+                            Margin="0,3,0,0"/>
+
+                    </StackPanel>
+
+                </Grid>
+
+            </Border>
+
+
+            <!-- ================================================= -->
+            <!-- CHAT AREA                                          -->
+            <!-- ================================================= -->
+
+            <ScrollViewer
+                x:Name="ChatScrollViewer"
+                Grid.Row="1"
+                VerticalScrollBarVisibility="Auto"
+                HorizontalScrollBarVisibility="Disabled"
+                Padding="25">
+
+                <Grid>
+
+                    <!-- WELCOME -->
+
+                    <StackPanel
+                        x:Name="WelcomePanel"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Margin="0,100,0,100">
+
+                        <TextBlock
+                            Text="Welcome to ChatLab"
+                            FontSize="26"
+                            FontWeight="Bold"
+                            Foreground="#202225"
+                            HorizontalAlignment="Center"/>
+
+                        <TextBlock
+                            Text="Connect to the server and start chatting."
+                            FontSize="14"
+                            Foreground="#72767D"
+                            Margin="0,8,0,0"
+                            HorizontalAlignment="Center"/>
+
+                    </StackPanel>
+
+
+                    <!-- MESSAGES -->
+
+                    <StackPanel
+                        x:Name="ChatPanel"
+                        Margin="0,0,0,20"/>
+
+                </Grid>
+
+            </ScrollViewer>
+
+
+            <!-- ================================================= -->
+            <!-- MESSAGE COMPOSER                                   -->
+            <!-- ================================================= -->
+
+            <Border
+                Grid.Row="2"
+                Background="White"
+                BorderBrush="#E5E7EB"
+                BorderThickness="0,1,0,0"
+                Padding="20,15">
+
+                <Grid>
+
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+
+                    <!-- EMOJI BUTTON -->
+
+                    <Button
+                        x:Name="EmojiButton"
+                        Grid.Column="0"
+                        Width="42"
+                        Height="42"
+                        Margin="0,0,8,0"
+                        Content="😊"
+                        FontSize="20"
+                        Background="#F3F4F6"
+                        BorderThickness="0"
+                        Click="EmojiButton_Click"/>
+
+
+                    <!-- MESSAGE INPUT -->
+
+                    <TextBox
+                        x:Name="MessageTextBox"
+                        Grid.Column="1"
+                        Height="42"
+                        Padding="12,10"
+                        VerticalContentAlignment="Center"
+                        Background="#F3F4F6"
+                        BorderThickness="0"
+                        FontSize="14"
+                        IsEnabled="False"
+                        KeyDown="MessageTextBox_KeyDown"/>
+
+
+                    <!-- SEND BUTTON -->
+
+                    <Button
+                        x:Name="SendButton"
+                        Grid.Column="2"
+                        Width="80"
+                        Height="42"
+                        Margin="8,0,0,0"
+                        Content="Send"
+                        Background="#6C4AB6"
+                        Foreground="White"
+                        BorderThickness="0"
+                        FontWeight="SemiBold"
+                        Click="SendButton_Click"
+                        IsEnabled="False"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- EMOJI POPUP                                         -->
+                    <!-- ================================================= -->
+
+                    <Popup
+                        x:Name="EmojiPopup"
+                        PlacementTarget="{Binding ElementName=EmojiButton}"
+                        Placement="Top"
+                        StaysOpen="False"
+                        AllowsTransparency="True">
+
+                        <Border
+                            Background="White"
+                            BorderBrush="#E5E7EB"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Padding="10">
+
+                            <WrapPanel Width="280">
+
+                                <Button Content="😀"
+                                        Tag="😀"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😃"
+                                        Tag="😃"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😄"
+                                        Tag="😄"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😁"
+                                        Tag="😁"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😂"
+                                        Tag="😂"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="🤣"
+                                        Tag="🤣"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😊"
+                                        Tag="😊"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😍"
+                                        Tag="😍"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="🥰"
+                                        Tag="🥰"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😎"
+                                        Tag="😎"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="🤔"
+                                        Tag="🤔"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😢"
+                                        Tag="😢"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😭"
+                                        Tag="😭"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😡"
+                                        Tag="😡"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="😱"
+                                        Tag="😱"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="🤯"
+                                        Tag="🤯"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="👍"
+                                        Tag="👍"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="👎"
+                                        Tag="👎"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="👏"
+                                        Tag="👏"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="🙌"
+                                        Tag="🙌"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="❤️"
+                                        Tag="❤️"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="🔥"
+                                        Tag="🔥"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="🎉"
+                                        Tag="🎉"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="💯"
+                                        Tag="💯"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="🚀"
+                                        Tag="🚀"
+                                        Click="Emoji_Click"/>
+
+                                <Button Content="👀"
+                                        Tag="👀"
+                                        Click="Emoji_Click"/>
+
+                            </WrapPanel>
+
+                        </Border>
+
+                    </Popup>
+
+                </Grid>
+
+            </Border>
+
+        </Grid>
+
+    </Grid>
+
+</Window>

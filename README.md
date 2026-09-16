@@ -1,998 +1,166 @@
-# PRN222 — Lab 1: Chat Client
+# PRN222 — ChatLab mở rộng
 
-A simple multi-client TCP chat application built with **C# / .NET 9**, consisting of a Console-based TCP Server and a WPF Chat Client.
+Ứng dụng chat TCP nhiều client, server Console và client WPF, C# / .NET 9.
 
-The purpose of this lab is to practice fundamental networking concepts including:
+## Các yêu cầu đã triển khai
 
-* Client–Server architecture
-* TCP communication
-* `TcpListener`
-* `TcpClient`
-* `NetworkStream`
-* Asynchronous network I/O
-* Multiple client connections
-* Message broadcasting
-* Application-level message protocol
-* TCP message framing
-* WPF client interface
+- **Emoji nhiều màu:** 12 emoji trong bộ chọn, hiển thị màu trong bong bóng chat bằng vector WPF. Tin nhắn trên mạng vẫn là Unicode UTF-8. Emoji ngoài bộ này dùng cách hiển thị mặc định của font.
+- **Gửi ảnh + preview:** chọn PNG/JPEG/GIF/BMP; xem trước ảnh đã chọn và tự tải ảnh nhận được để hiển thị trong chat. GIF hiển thị ảnh tĩnh. Ảnh tối đa 20 MB, preview giải mã ở chiều rộng 480 px.
+- **File lớn từ 500 MB:** hỗ trợ đến 10 GB/file, kích thước dùng `long`, đọc/ghi theo buffer 64 KB, không nạp toàn bộ file vào RAM.
+- **Asynchronous:** các thao tác kết nối, đọc mạng, ghi mạng và đọc/ghi file dùng API async, có cancellation.
+- **Parallel:** tải xuống chia file thành 4 vùng byte, chạy `Parallel.ForEachAsync` với 4 kết nối TCP độc lập; server broadcast tới các client bằng `Task.WhenAll`.
+- **Gửi ảnh khi đang truyền file:** chat, upload file, upload ảnh và download dùng kết nối riêng, hoạt động đồng thời.
+- **Tiến độ / hủy / kiểm tra dữ liệu:** mỗi lượt truyền có thẻ riêng; SHA-256 được kiểm tra trước khi đổi file `.part` thành file đích. Lỗi/hủy tải không ghi đè file cũ.
 
----
+## Chạy ứng dụng
 
-## 1. Project Overview
+Cần Windows và .NET 9 SDK với WPF (hoặc Visual Studio có workload .NET desktop development).
 
-The application allows multiple clients to connect to a central TCP server and communicate in a shared chat room.
+Tại thư mục chứa `ChatLab1.sln`:
+
+```powershell
+dotnet build ChatLab1.sln -m:1
+dotnet run --project ChatServer --no-build
+```
+
+Mở hai terminal khác, mỗi terminal chạy:
+
+```powershell
+dotnet run --project ChatClient --no-build
+```
+
+Nhập tên Alice/Bob rồi bấm **Connect**. Server phải chạy trước client.
+
+- **Send / Enter:** gửi tin nhắn.
+- **Nút mặt cười:** chèn emoji.
+- **Gửi ảnh:** chọn ảnh; thẻ ảnh xuất hiện ngay, các client nhận preview sau khi server nhận xong ảnh.
+- **Gửi file (500 MB+):** chọn file; sau khi upload xong, server thông báo cho cả phòng.
+- **Lưu file...:** chọn nơi lưu; tải bằng 4 kết nối song song.
+- **Hủy:** dừng riêng lượt truyền đó. **Disconnect:** hủy mọi lượt truyền của phiên hiện tại.
+
+Client đang dùng `127.0.0.1`. Để thử LAN, đổi `Host` trong `ChatClient/MainWindow.xaml.cs` sang IP server và cho phép TCP 5000, 5001 qua firewall của server.
+
+## Kịch bản demo cho thầy
+
+1. Chạy server và hai client Alice/Bob.
+2. Gửi câu có emoji: `Xin chào 😊 ❤️ 💚 💙` và kiểm tra màu ở cả hai client.
+3. Alice gửi một ảnh, Bob thấy preview ngay trong khung chat; lưu lại ảnh để kiểm tra.
+4. Tạo file 512 MB nếu chưa có:
+
+   ```powershell
+   $demo = [System.IO.File]::Create((Join-Path $PWD 'demo-512MB.bin'))
+   $demo.SetLength(512MB)
+   $demo.Dispose()
+   ```
+
+5. Alice gửi file này. Khi tiến độ còn chạy, gửi thêm ảnh và tin nhắn. Bob phải nhận được ảnh/tin nhắn trước khi file lớn xong.
+6. Khi file được thông báo, Bob bấm **Lưu file...**. Trong lúc tải, tiếp tục gửi ảnh/tin nhắn.
+7. Đối chiếu SHA-256 bằng `Get-FileHash` trên file nguồn và file nhận.
+8. Thử hủy một lượt tải, hoặc ngắt kết nối khi truyền; lượt khác và client còn lại vẫn hoạt động.
+
+Trên localhost/SSD tốc độ rất cao, lượt truyền có thể kết thúc nhanh. Chọn file lớn hơn hoặc thử qua LAN để dễ quan sát; không có độ trễ giả trong ứng dụng.
+
+## Cấu trúc
+
+| File | Vai trò |
+| --- | --- |
+| `ChatServer/Program.cs` | Hai listener, quản lý phiên, broadcast, lưu upload, trả các vùng byte |
+| `Shared/TransferProtocol.cs` | Metadata JSON có length-prefix, copy từng khối, upload, parallel download, hash |
+| `ChatClient/MainWindow.xaml.cs` | Kết nối, chat, chọn file, preview, điều phối tác vụ |
+| `ChatClient/Controls/TransferCard.cs` | Tiến độ, trạng thái, preview và nút hủy/lưu |
+| `ChatClient/Controls/ColorEmoji.cs` | Vector emoji màu và chèn emoji vào TextBlock |
+| `ChatClient/Controls/MessageBubble.xaml.cs` | Bong bóng chat của mình/người khác |
+| `ChatLab.IntegrationTests` | Kiểm thử thật qua TCP, gồm file 512 MB |
+| `ChatLab.UiSmoke` | Dựng WPF và render giao diện để kiểm tra bố cục |
+
+## Giao thức và luồng dữ liệu
+
+### Cổng 5000 — chat
 
 ```text
-                    TCP
-                     │
-                     ▼
-            ┌─────────────────┐
-            │   Chat Server   │
-            │                 │
-            │ TcpListener     │
-            │ Client List     │
-            │ Broadcast       │
-            │ User Management │
-            └────────┬────────┘
-                     │
-          ┌──────────┼──────────┐
-          │          │          │
-          ▼          ▼          ▼
-       Client A   Client B   Client C
-          │          │          │
-          └──────────┼──────────┘
-                     │
-                 WPF Client
+[4 byte độ dài little-endian][UTF-8]
 ```
 
-The server acts as the central coordinator. Clients connect to the server, send messages to it, and receive messages broadcast by the server.
+Client gửi username đầu tiên; server trả `[NAME]`, `[TOKEN]`, `[ONLINE]`.
+Tin nhắn có dạng `[Alice]Xin chào`; thông báo tệp là `[ATTACHMENT]` + JSON metadata.
+Token ngẫu nhiên gắn upload/download với phiên chat đang kết nối.
 
----
+Mỗi client có `SemaphoreSlim` bảo vệ **cả header và body** khi gửi. Không giữ khóa đó trong suốt lượt truyền file, vì file chạy ở kết nối riêng.
 
-# 2. Objectives
+### Cổng 5001 — ảnh và file
 
-The main objectives of Lab 1 are:
+Mỗi kết nối bắt đầu bằng `[4 byte độ dài][JSON TransferRequest]`.
 
-1. Understand the basic Client–Server model.
-2. Establish a TCP connection between client and server.
-3. Send and receive data through `NetworkStream`.
-4. Support multiple clients simultaneously.
-5. Broadcast messages to connected clients.
-6. Manage usernames and online users.
-7. Build a simple WPF chat interface.
-8. Understand why TCP requires application-level message framing.
-9. Apply asynchronous programming to network communication.
+- Upload: metadata → server trả `ready` → đúng `Size` byte nhị phân → server tính hash, công bố metadata, trả xác nhận.
+- Download: gửi ID, Offset, Count → server kiểm tra vùng byte → trả `ready` → đúng `Count` byte nhị phân.
+- Metadata tối đa 64 KB. Nội dung file không được mã hóa base64, không nằm trong frame JSON.
+- Upload hoàn thành trước khi người nhận tải; đây là mô hình lưu trên server rồi tải xuống.
 
----
-
-# 3. Technologies
-
-| Technology      | Purpose                    |
-| --------------- | -------------------------- |
-| C#              | Programming language       |
-| .NET 9          | Application framework      |
-| WPF             | Chat client UI             |
-| TCP             | Transport protocol         |
-| `TcpListener`   | Server-side TCP listener   |
-| `TcpClient`     | Client-side TCP connection |
-| `NetworkStream` | Read/write TCP data        |
-| UTF-8           | Convert strings to bytes   |
-| Visual Studio   | Development environment    |
-
----
-
-# 4. Solution Structure
+Download dùng 4 kết nối cho 4 vùng không chồng nhau. Ví dụ file 512 MB:
 
 ```text
-ChatLab1
-│
-├── ChatServer
-│   └── Program.cs
-│
-└── ChatClient
-    │
-    ├── MainWindow.xaml
-    ├── MainWindow.xaml.cs
-    │
-    └── Controls
-        ├── MessageBubble.xaml
-        └── MessageBubble.xaml.cs
+Kết nối 1:   0–128 MB
+Kết nối 2: 128–256 MB
+Kết nối 3: 256–384 MB
+Kết nối 4: 384–512 MB
 ```
 
-### ChatServer
+Các mốc cuối là exclusive. Với kích thước lẻ, phép chia bằng `long` đảm bảo không thiếu hoặc trùng byte. File rỗng cũng được hỗ trợ.
 
-Responsible for:
+## Kiểm thử
 
-* Starting the TCP server
-* Listening for incoming clients
-* Accepting TCP connections
-* Receiving usernames
-* Managing connected clients
-* Broadcasting messages
-* Managing online users
-* Handling client disconnects
-* Message framing
+Chạy server riêng trước khi chạy integration test; để cổng 5000/5001 trống trước khi khởi động server:
 
-### ChatClient
-
-Responsible for:
-
-* Connecting to the server
-* Sending username
-* Sending chat messages
-* Receiving server messages
-* Displaying chat messages
-* Displaying online users
-* Connect / Disconnect UI
-* Emoji selection
-* Enter-to-send
-* Auto scrolling
-
----
-
-# 5. Architecture
-
-The application follows a basic Client–Server architecture.
-
-```text
-Client
-   │
-   │ TCP Connection
-   ▼
-Server
-   │
-   ├── Client A
-   ├── Client B
-   └── Client C
+```powershell
+dotnet run --project ChatLab.IntegrationTests -p:UseSharedCompilation=false
 ```
 
-The server maintains the shared state of the chat room.
+Bộ kiểm thử dùng giao thức thực tế của client để kiểm tra:
 
-For example:
+- Hai phiên chat và token.
+- Upload/download file 512 MiB, kiểm tra kích thước và SHA-256.
+- Chat Unicode và ảnh nhận được khi upload/download lớn chưa hoàn thành.
+- Hủy tải: xóa `.part`, không phá file đích cũ.
+- Checksum sai bị từ chối.
+- File rỗng, vùng byte không hợp lệ, metadata quá lớn.
 
-```text
-Server
- ├── Alice
- ├── Bob
- └── Charlie
+Cần khoảng 2 GB dung lượng trống cho dữ liệu thử. File phía test được dọn khi kết thúc; bản upload trên server nằm trong thư mục `Transfers` cạnh file chạy server.
+
+Kiểm tra render WPF (không thay thế toàn bộ thao tác người dùng thủ công):
+
+```powershell
+dotnet run --project ChatLab.UiSmoke -p:UseSharedCompilation=false
 ```
 
-When Alice sends a message:
+Kết quả: `artifacts/ui-smoke.png`.
 
-```text
-Alice
-  │
-  │ "Hello"
-  ▼
-Server
-  │
-  ├────────► Alice
-  ├────────► Bob
-  └────────► Charlie
-```
+## Các câu hỏi vấn đáp
 
-This is implemented using server-side broadcasting.
+**Tại sao không gửi file 500 MB trong một message?**
+Vì sẽ phải cấp phát buffer rất lớn, tăng RAM và có thể chặn các message sau trên cùng kết nối. Ở đây file đi từng khối trên kết nối riêng.
 
----
+**Async khác parallel thế nào?**
+Async giúp không chặn luồng khi chờ I/O. Parallel ở phần tải xuống là bốn tác vụ đọc các vùng file cùng lúc qua bốn socket. Chỉ thêm `async` vào hàm chưa tạo ra cơ chế tải bốn phần này.
 
-# 6. Why TCP?
+**Tại sao dùng `ReadExactlyAsync`?**
+Một lần `ReadAsync` có thể trả ít byte hơn yêu cầu. Header/metadata phải đọc đủ; phần file cũng lặp cho đến khi đủ byte đã khai báo.
 
-The application uses TCP because a basic chat application benefits from:
+**Nếu bỏ `SemaphoreSlim` khi broadcast?**
+Hai tác vụ có thể ghi xen kẽ header/body vào cùng socket. Phía nhận sẽ hiểu sai độ dài và nội dung.
 
-* Reliable delivery
-* Ordered byte transmission
-* Connection-oriented communication
-* Automatic retransmission when necessary
+**Vì sao ảnh vẫn đến trong lúc gửi file?**
+Mỗi upload có socket riêng; UI không chờ đồng bộ. Kênh chat và các transfer khác không xếp hàng sau toàn bộ file lớn. Chúng vẫn chia sẻ băng thông mạng nên tốc độ tùy đường truyền.
 
-For example, the application expects:
+**Tại sao dùng `long` cho size/offset?**
+`int` bị giới hạn khoảng 2 GB. `long` cho phép xử lý file lớn hơn mà không tràn số.
 
-```text
-Message 1: Hello
-Message 2: How are you?
-Message 3: Good morning
-```
+**Tại sao dùng `.part` và SHA-256?**
+Không hiển thị file chưa tải xong như file hoàn chỉnh. Hash phát hiện nội dung tải về không khớp metadata trước khi thay thế file đích.
 
-to be received in the same order.
+## Giới hạn của bản lab
 
-However, TCP itself does **not** understand application-level messages.
-
-TCP provides a:
-
-```text
-Reliable Ordered Byte Stream
-```
-
-rather than:
-
-```text
-Message 1
-Message 2
-Message 3
-```
-
-This distinction is important in this project.
-
----
-
-# 7. TCP Message Framing
-
-One of the main networking problems encountered during development was TCP message boundaries.
-
-Suppose the application sends:
-
-```text
-[NAME]Alice
-[SERVER]Alice joined the chat.
-[ONLINE]Alice|Bob
-```
-
-The receiver may not receive them as three separate `ReadAsync()` results.
-
-It may receive:
-
-```text
-[NAME]Alice[SERVER]Alice joined the chat.[ONLINE]Alice|Bob
-```
-
-or only part of one message.
-
-Therefore, the application implements **length-prefix message framing**.
-
-## Protocol
-
-Each message is transmitted as:
-
-```text
-[4-byte message length][message bytes]
-```
-
-Example:
-
-```text
-[5][Hello]
-```
-
-The receiver performs:
-
-```text
-Read 4 bytes
-      ↓
-Get message length
-      ↓
-Read exactly N bytes
-      ↓
-Decode UTF-8
-      ↓
-Get complete message
-```
-
-This allows the application to determine exactly where one application message ends.
-
----
-
-# 8. `ReadExactlyAsync`
-
-A single `ReadAsync()` call is not guaranteed to return all requested bytes.
-
-For example, the application may request:
-
-```text
-100 bytes
-```
-
-but receive:
-
-```text
-40 bytes
-```
-
-The remaining bytes may arrive later.
-
-Therefore, the application repeatedly reads until the required number of bytes has been received.
-
-Conceptually:
-
-```text
-Required: 100 bytes
-
-Read 1 → 40 bytes
-Read 2 → 35 bytes
-Read 3 → 25 bytes
-
-Total → 100 bytes
-```
-
-This is why the project contains:
-
-```csharp
-ReadExactlyAsync(...)
-```
-
----
-
-# 9. Application Message Protocol
-
-The current application uses simple text prefixes to distinguish different message types.
-
-## Server assigns username
-
-```text
-[NAME]Alice
-```
-
-Meaning:
-
-```text
-The server has assigned/confirmed the username Alice.
-```
-
-## Server notification
-
-```text
-[SERVER]Bob joined the chat.
-```
-
-Meaning:
-
-```text
-System notification
-```
-
-## Online user list
-
-```text
-[ONLINE]Alice|Bob|Charlie
-```
-
-Meaning:
-
-```text
-Current online users:
-Alice
-Bob
-Charlie
-```
-
-## Chat message
-
-```text
-[Alice]Hello Bob!
-```
-
-Meaning:
-
-```text
-Username = Alice
-Message  = Hello Bob!
-```
-
----
-
-# 10. Username Management
-
-The server is responsible for ensuring that usernames are unique.
-
-For example, if the following clients connect:
-
-```text
-Alice
-Alice
-Alice
-```
-
-the server assigns:
-
-```text
-Alice
-Alice2
-Alice3
-```
-
-This prevents ambiguity when identifying message ownership.
-
-The server is the source of truth for usernames because multiple clients may attempt to use the same username at the same time.
-
----
-
-# 11. Online Users
-
-The server maintains a list of connected clients.
-
-Each client contains:
-
-```text
-TcpClient
-Username
-```
-
-Conceptually:
-
-```text
-ClientInfo
-├── Client
-└── Username
-```
-
-When the online-user list changes, the server broadcasts:
-
-```text
-[ONLINE]Alice|Bob|Charlie
-```
-
-The clients then update their UI based on the server-provided list.
-
-The client does not independently decide who is online.
-
----
-
-# 12. Server Workflow
-
-The server starts on port:
-
-```text
-5000
-```
-
-Main workflow:
-
-```text
-Start Server
-     │
-     ▼
-Start TcpListener
-     │
-     ▼
-Wait for client
-     │
-     ▼
-Accept TcpClient
-     │
-     ▼
-Receive username
-     │
-     ▼
-Generate unique username
-     │
-     ▼
-Add client to client list
-     │
-     ▼
-Send [NAME]
-     │
-     ▼
-Broadcast join notification
-     │
-     ▼
-Broadcast online users
-     │
-     ▼
-Receive messages
-     │
-     ▼
-Broadcast messages
-     │
-     ▼
-Client disconnects
-     │
-     ▼
-Remove client
-     │
-     ▼
-Broadcast leave notification
-     │
-     ▼
-Update online users
-```
-
----
-
-# 13. Client Workflow
-
-The client workflow is:
-
-```text
-Start WPF Application
-        │
-        ▼
-Enter Username
-        │
-        ▼
-Click Connect
-        │
-        ▼
-TcpClient.ConnectAsync()
-        │
-        ▼
-Send Username
-        │
-        ▼
-Receive Server Messages
-        │
-        ├── [NAME]
-        ├── [ONLINE]
-        ├── [SERVER]
-        └── [Username]
-        │
-        ▼
-Display messages
-```
-
-When the user sends a chat message:
-
-```text
-TextBox
-   │
-   ▼
-Send Button / Enter
-   │
-   ▼
-UTF-8 Encoding
-   │
-   ▼
-Length Prefix
-   │
-   ▼
-NetworkStream
-   │
-   ▼
-TCP Server
-```
-
----
-
-# 14. Asynchronous Communication
-
-The application uses asynchronous network APIs such as:
-
-```csharp
-AcceptTcpClientAsync()
-ConnectAsync()
-ReadAsync()
-WriteAsync()
-```
-
-Network operations may take an unpredictable amount of time.
-
-For example:
-
-```text
-Waiting for client
-Waiting for message
-Waiting for network data
-```
-
-Using asynchronous I/O prevents the application from unnecessarily blocking while waiting for network operations.
-
-For the WPF client, this is especially important because blocking the UI thread can cause the interface to become unresponsive.
-
----
-
-# 15. Client UI Features
-
-The WPF client currently provides:
-
-### Connection
-
-* Connect
-* Disconnect
-* Connection status
-
-### User
-
-* Username input
-* Server-confirmed username
-* Online users
-
-### Chat
-
-* Incoming message bubble
-* Outgoing message bubble
-* Username
-* Timestamp
-* System messages
-* Auto scrolling
-
-### Input
-
-* Send button
-* Enter to send
-* Emoji popup
-
----
-
-# 16. Running the Project
-
-## Step 1 — Start Server
-
-Run:
-
-```text
-ChatServer
-```
-
-Expected output:
-
-```text
-=================================
-           CHAT SERVER
-=================================
-Server started on port 5000
-Waiting for clients...
-```
-
----
-
-## Step 2 — Start Client
-
-Run:
-
-```text
-ChatClient
-```
-
-Enter a username, for example:
-
-```text
-Alice
-```
-
-Click:
-
-```text
-Connect
-```
-
-The client connects to:
-
-```text
-127.0.0.1:5000
-```
-
----
-
-## Step 3 — Start Multiple Clients
-
-Run multiple instances of `ChatClient`.
-
-For example:
-
-```text
-Client 1 → Alice
-Client 2 → Bob
-Client 3 → Charlie
-```
-
-Expected online list:
-
-```text
-ONLINE
-
-● Alice
-● Bob
-● Charlie
-```
-
----
-
-# 17. Demonstration Scenario
-
-A recommended Lab 1 demonstration:
-
-### 1. Start server
-
-```text
-Server started on port 5000
-Waiting for clients...
-```
-
-### 2. Connect Alice
-
-```text
-Alice joined the chat.
-Online clients: 1
-```
-
-### 3. Connect Bob
-
-```text
-Bob joined the chat.
-Online clients: 2
-```
-
-Both clients should see:
-
-```text
-Alice
-Bob
-```
-
-### 4. Alice sends
-
-```text
-Hello Bob!
-```
-
-Bob receives:
-
-```text
-Alice
-Hello Bob!
-```
-
-### 5. Bob replies
-
-```text
-Hi Alice!
-```
-
-Alice receives:
-
-```text
-Bob
-Hi Alice!
-```
-
-### 6. Disconnect Bob
-
-Alice receives:
-
-```text
-Bob left the chat.
-```
-
-Online users become:
-
-```text
-● Alice
-```
-
----
-
-# 18. Important Networking Concepts
-
-This project demonstrates the following concepts.
-
-## Client–Server
-
-```text
-Client → Request/Message → Server
-Client ← Response/Broadcast ← Server
-```
-
-## IP Address
-
-The client connects to:
-
-```text
-127.0.0.1
-```
-
-which represents the local machine.
-
-## Port
-
-The server listens on:
-
-```text
-5000
-```
-
-The combination:
-
-```text
-127.0.0.1:5000
-```
-
-identifies the server endpoint used by this lab.
-
-## TCP
-
-TCP provides:
-
-```text
-Connection
-Reliability
-Ordering
-Byte stream
-```
-
-## NetworkStream
-
-`NetworkStream` provides the stream used to read and write data through the TCP connection.
-
-## Encoding
-
-Application strings are converted to bytes using:
-
-```text
-UTF-8
-```
-
-before being transmitted.
-
-## Message Framing
-
-Length-prefix framing provides application-level message boundaries on top of TCP's byte stream.
-
----
-
-# 19. Why the Architecture Is Designed This Way
-
-The main design decisions are:
-
-| Decision                | Why                                     |
-| ----------------------- | --------------------------------------- |
-| TCP                     | Reliable ordered communication          |
-| Client–Server           | Centralized chat coordination           |
-| `TcpListener`           | Accept incoming TCP connections         |
-| `TcpClient`             | Establish/manage TCP client connection  |
-| `NetworkStream`         | Read/write TCP bytes                    |
-| Async I/O               | Avoid blocking network operations       |
-| UTF-8                   | Convert text to bytes                   |
-| Length prefix           | Preserve application message boundaries |
-| Server-side client list | Maintain shared chat state              |
-| Unique username         | Avoid identity conflicts                |
-| Server broadcast        | Synchronize clients                     |
-| WPF                     | Provide graphical chat interface        |
-
----
-
-# 20. Key Lessons
-
-The most important lesson from this lab is that:
-
-> **TCP does not transmit application messages. TCP transmits a reliable ordered byte stream.**
-
-Therefore, an application must define its own protocol.
-
-In this project:
-
-```text
-Application
-     │
-     │ Message
-     ▼
-Message Protocol
-     │
-     │ Length Prefix
-     ▼
-UTF-8 Bytes
-     │
-     ▼
-NetworkStream
-     │
-     ▼
-TCP
-     │
-     ▼
-Network
-```
-
-Understanding this relationship is more important than simply memorizing the APIs.
-
----
-
-# 21. Possible Future Improvements
-
-The current implementation is designed for Lab 1. Possible future improvements include:
-
-* JSON-based message models
-* Strongly typed message protocol
-* Better error handling
-* Connection retry
-* Server shutdown handling
-* Thread-safe client management
-* Private messaging
-* Chat rooms
-* Message history
-* Authentication
-* Database persistence
-* File/image transfer
-* Encryption/TLS
-
-These features are outside the current basic Lab 1 implementation.
-
----
-
-# 22. Learning / Viva Questions
-
-The following questions should be understood before presenting the lab:
-
-### TCP
-
-1. Why did you choose TCP instead of UDP?
-2. What does TCP actually provide?
-3. Is TCP message-based?
-4. What is a TCP byte stream?
-5. What happens when a TCP connection is closed?
-
-### Server
-
-6. Why does the server use `TcpListener`?
-7. What does `AcceptTcpClientAsync()` do?
-8. Why does the server maintain a client list?
-9. Why does the server broadcast messages?
-10. Why does the server determine the final username?
-
-### Client
-
-11. Why does the client use `TcpClient`?
-12. What does `ConnectAsync()` do?
-13. Why does the client use `NetworkStream`?
-14. Why is the client asynchronous?
-
-### Message Protocol
-
-15. Why is message framing necessary?
-16. Why can multiple messages appear in one `ReadAsync()`?
-17. Why can one message require multiple reads?
-18. Why use a length prefix?
-19. Why encode the message using UTF-8?
-20. What would happen if framing were removed?
-
-### Architecture
-
-21. Why is the server the source of truth for online users?
-22. Why shouldn't each client independently maintain the online-user list?
-23. What happens if two clients choose the same username?
-24. What happens when a client disconnects unexpectedly?
-
----
-
-# 23. Current Lab Status
-
-```text
-Lab 1 — Chat Client
-
-TCP Server                 ✓
-TCP Client                 ✓
-Connect / Disconnect       ✓
-Send / Receive             ✓
-Multiple Clients           ✓
-Broadcast                  ✓
-Username                   ✓
-Join / Leave               ✓
-Online Users               ✓
-Chat UI                    ✓
-Message Bubble             ✓
-Auto Scroll                ✓
-Enter to Send              ✓
-Emoji                      ✓
-Message Framing            ✓
-
-JSON Message Model         Planned
-Advanced Error Handling    Planned
-Final Testing              Planned
-```
-
----
-
-# 24. Final Goal
-
-The goal of this lab is not only to produce a working chat application.
-
-The real goal is to understand the relationship between:
-
-```text
-Networking Concept
-        ↓
-Architecture
-        ↓
-Protocol
-        ↓
-.NET API
-        ↓
-Implementation
-        ↓
-User Interface
-```
-
-A successful implementation should allow the developer to explain not only:
-
-> **"How does this code work?"**
-
-but also:
-
-> **"Why was it designed this way, and what would happen if we changed or removed it?"**
-
-This distinction is especially important when evaluating networking applications.
+- Không có tài khoản, TLS, lưu lịch sử chat hay resume transfer; token là định danh phiên, không thay thế xác thực bảo mật.
+- Mỗi transfer tối đa 30 phút trên server; người dùng có thể hủy sớm.
+- Server giữ file trong `Transfers` cạnh executable; metadata nằm trong RAM, nên file của phiên chạy cũ không được quảng bá lại sau restart. Có thể dọn thư mục này khi server đã dừng và không cần file cũ nữa.
+- Nút gửi ảnh giới hạn 20 MB để preview; có thể gửi ảnh lớn hơn bằng nút gửi file, khi đó không tự preview.
+- Ảnh tải xong mới hiển thị; không stream preview theo từng dòng ảnh.

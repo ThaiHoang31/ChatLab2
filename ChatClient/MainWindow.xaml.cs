@@ -1,883 +1,298 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.IO;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading.Tasks;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using ChatClient.Controls;
+using ChatLab;
+using Microsoft.Win32;
 
 namespace ChatClient;
 
 public partial class MainWindow : Window
 {
+    private const string Host = "127.0.0.1";
     private TcpClient? _client;
-
-    private string _username = "";
-
-    private bool _isConnected = false;
-
-
-    // =====================================================
-    // CONSTRUCTOR
-    // =====================================================
+    private string _username = "", _token = "";
+    private CancellationTokenSource _session = new();
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly string _previewDirectory = Path.Combine(Path.GetTempPath(), "ChatLab", Guid.NewGuid().ToString("N"));
 
     public MainWindow()
     {
         InitializeComponent();
-
-        StatusTextBlock.Text =
-            "Disconnected";
-
-        ConnectButton.Visibility =
-            Visibility.Visible;
-
-        DisconnectButton.Visibility =
-            Visibility.Collapsed;
-
-        SendButton.IsEnabled = false;
-
-        MessageTextBox.IsEnabled = false;
+        SetConnected(false);
+        EmojiChoices.Children.Clear();
+        foreach (string emoji in ColorEmoji.Symbols)
+        {
+            var button = new Button { Content = ColorEmoji.CreateImage(emoji, 28), Tag = emoji,
+                Padding = new Thickness(7), Margin = new Thickness(2), ToolTip = emoji };
+            button.Click += Emoji_Click;
+            EmojiChoices.Children.Add(button);
+        }
+        EmojiButton.Content = ColorEmoji.CreateImage("😊", 26);
     }
 
-
-    // =====================================================
-    // CONNECT
-    // =====================================================
-
-    private async void ConnectButton_Click(
-        object sender,
-        RoutedEventArgs e)
+    private void SetConnected(bool connected)
     {
-        if (_isConnected)
+        ConnectButton.Visibility = connected ? Visibility.Collapsed : Visibility.Visible;
+        DisconnectButton.Visibility = connected ? Visibility.Visible : Visibility.Collapsed;
+        UsernameTextBox.IsEnabled = !connected;
+        SendButton.IsEnabled = MessageTextBox.IsEnabled = EmojiButton.IsEnabled = connected;
+        ImageButton.IsEnabled = FileButton.IsEnabled = connected && _token.Length > 0;
+        if (!connected) StatusTextBlock.Text = "Disconnected";
+    }
+
+    private async void ConnectButton_Click(object sender, RoutedEventArgs e)
+    {
+        string name = UsernameTextBox.Text.Trim();
+        if (name.Length is < 1 or > 40 || name.IndexOfAny(['[', ']', '|']) >= 0 || name.Any(char.IsControl) ||
+            new[] { "NAME", "TOKEN", "ONLINE", "SERVER", "ATTACHMENT" }.Contains(name, StringComparer.OrdinalIgnoreCase))
         {
+            MessageBox.Show("Tên dài 1–40 ký tự, không chứa [, ], | hoặc ký tự điều khiển; không dùng NAME, TOKEN, ONLINE, SERVER, ATTACHMENT.");
             return;
         }
-
+        ConnectButton.IsEnabled = false;
+        var client = new TcpClient();
         try
         {
-            string username =
-                UsernameTextBox.Text.Trim();
-
-            if (string.IsNullOrWhiteSpace(username))
-            {
-                MessageBox.Show(
-                    "Please enter a username.",
-                    "ChatLab",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-
-                UsernameTextBox.Focus();
-
-                return;
-            }
-
-            _client =
-                new TcpClient();
-
-            await _client.ConnectAsync(
-                "127.0.0.1",
-                5000);
-
-            NetworkStream stream =
-                _client.GetStream();
-
-            // =============================================
-            // SEND USERNAME USING FRAMED MESSAGE
-            // =============================================
-
-            await SendMessageAsync(
-                stream,
-                username);
-
-            _isConnected = true;
-
-            _username = username;
-
-            StatusTextBlock.Text =
-                $"Connecting as {_username}...";
-
-            ConnectButton.Visibility =
-                Visibility.Collapsed;
-
-            DisconnectButton.Visibility =
-                Visibility.Visible;
-
-            UsernameTextBox.IsEnabled =
-                false;
-
-            SendButton.IsEnabled =
-                true;
-
-            MessageTextBox.IsEnabled =
-                true;
-
-            MessageTextBox.Focus();
-
-            ClearOnlineUsers();
-
-            AddSystemMessage(
-                "Connecting to server...");
-
-            // =============================================
-            // START RECEIVE LOOP
-            // =============================================
-
-            _ = ReceiveMessagesAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await client.ConnectAsync(Host, 5000, timeout.Token);
+            _client = client;
+            _session = new CancellationTokenSource();
+            _username = name;
+            _token = "";
+            await SendMessageAsync(client.GetStream(), name, _session.Token);
+            SetConnected(true);
+            StatusTextBlock.Text = "Connecting as " + name;
+            _ = ReceiveMessagesAsync(client, _session.Token);
         }
         catch (Exception ex)
         {
-            _client?.Close();
-
-            _client = null;
-
-            _isConnected = false;
-
-            MessageBox.Show(
-                $"Could not connect to server.\n\n{ex.Message}",
-                "Connection Error",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+            client.Dispose();
+            Disconnect();
+            MessageBox.Show("Không kết nối được: " + ex.Message);
         }
+        finally { ConnectButton.IsEnabled = true; }
     }
 
+    private void DisconnectButton_Click(object sender, RoutedEventArgs e) => Disconnect();
 
-    // =====================================================
-    // DISCONNECT BUTTON
-    // =====================================================
-
-    private async void DisconnectButton_Click(
-        object sender,
-        RoutedEventArgs e)
+    private void Disconnect()
     {
-        await DisconnectAsync(
-            showSystemMessage: true);
+        _session.Cancel();
+        _client?.Dispose();
+        _client = null;
+        _token = "";
+        SetConnected(false);
+        OnlineUsersPanel.Children.Clear();
     }
 
-
-    // =====================================================
-    // DISCONNECT
-    // =====================================================
-
-    private async Task DisconnectAsync(
-        bool showSystemMessage)
+    private async Task ReceiveMessagesAsync(TcpClient client, CancellationToken ct)
     {
-        if (!_isConnected &&
-            _client == null)
-        {
-            return;
-        }
-
-        _isConnected = false;
-
         try
         {
-            if (_client != null)
+            var stream = client.GetStream();
+            while (!ct.IsCancellationRequested)
             {
-                _client.Close();
-
-                _client.Dispose();
-
-                _client = null;
+                byte[] header = new byte[4];
+                await stream.ReadExactlyAsync(header, ct);
+                int length = BitConverter.ToInt32(header);
+                if (length <= 0 || length > 1024 * 1024) throw new InvalidDataException("Invalid message length.");
+                byte[] bytes = new byte[length];
+                await stream.ReadExactlyAsync(bytes, ct);
+                ProcessIncomingMessage(Encoding.UTF8.GetString(bytes));
             }
         }
-        catch
+        catch (Exception ex)
         {
+            if (ReferenceEquals(_client, client))
+            {
+                Disconnect();
+                AddSystemMessage("Mất kết nối: " + ex.Message);
+            }
         }
-
-        StatusTextBlock.Text =
-            "Disconnected";
-
-        ConnectButton.Visibility =
-            Visibility.Visible;
-
-        DisconnectButton.Visibility =
-            Visibility.Collapsed;
-
-        UsernameTextBox.IsEnabled =
-            true;
-
-        SendButton.IsEnabled =
-            false;
-
-        MessageTextBox.IsEnabled =
-            false;
-
-        MessageTextBox.Clear();
-
-        ClearOnlineUsers();
-
-        if (showSystemMessage)
-        {
-            AddSystemMessage(
-                "You have disconnected from the server.");
-        }
-
-        await Task.CompletedTask;
     }
 
-
-    // =====================================================
-    // SEND BUTTON
-    // =====================================================
-
-    private async void SendButton_Click(
-        object sender,
-        RoutedEventArgs e)
+    private void ProcessIncomingMessage(string message)
     {
-        await SendChatMessageAsync();
+        if (message.StartsWith("[NAME]"))
+        {
+            _username = message[6..];
+            UsernameTextBox.Text = _username;
+            StatusTextBlock.Text = "Connected as " + _username;
+        }
+        else if (message.StartsWith("[TOKEN]"))
+        {
+            _token = message[7..];
+            SetConnected(true);
+        }
+        else if (message.StartsWith("[ONLINE]"))
+        {
+            OnlineUsersPanel.Children.Clear();
+            foreach (string name in message[8..].Split('|', StringSplitOptions.RemoveEmptyEntries))
+                OnlineUsersPanel.Children.Add(new TextBlock { Text = "● " + name, Foreground = Brushes.LightGreen,
+                    Margin = new Thickness(0, 4, 0, 4) });
+        }
+        else if (message.StartsWith("[SERVER]")) AddSystemMessage(message[8..]);
+        else if (message.StartsWith("[ATTACHMENT]"))
+        {
+            var item = JsonSerializer.Deserialize<Attachment>(message[12..])
+                ?? throw new InvalidDataException("Invalid attachment.");
+            ShowAttachment(item);
+        }
+        else if (message.StartsWith('[') && message.IndexOf(']') is int end && end > 1)
+        {
+            string name = message[1..end];
+            var bubble = new MessageBubble();
+            bubble.SetMessage(name, message[(end + 1)..], name == _username);
+            AddChatControl(bubble);
+        }
     }
 
-
-    // =====================================================
-    // SEND CHAT MESSAGE
-    // =====================================================
+    private async Task SendMessageAsync(NetworkStream stream, string message, CancellationToken ct)
+    {
+        byte[] data = Encoding.UTF8.GetBytes(message);
+        if (data.Length > 1024 * 1024) throw new InvalidDataException("Tin nhắn quá dài.");
+        await _sendLock.WaitAsync(ct);
+        try
+        {
+            await stream.WriteAsync(BitConverter.GetBytes(data.Length), ct);
+            await stream.WriteAsync(data, ct);
+        }
+        finally { _sendLock.Release(); }
+    }
 
     private async Task SendChatMessageAsync()
     {
-        if (!_isConnected ||
-            _client == null)
-        {
-            return;
-        }
+        var client = _client;
+        if (client == null || string.IsNullOrWhiteSpace(MessageTextBox.Text)) return;
+        string text = MessageTextBox.Text.Trim();
+        MessageTextBox.Clear();
+        try { await SendMessageAsync(client.GetStream(), text, _session.Token); }
+        catch (Exception ex) { AddSystemMessage("Gửi thất bại: " + ex.Message); }
+    }
 
-        string message =
-            MessageTextBox.Text.Trim();
+    private async void SendButton_Click(object sender, RoutedEventArgs e) => await SendChatMessageAsync();
+    private async void MessageTextBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter) { e.Handled = true; await SendChatMessageAsync(); }
+    }
+    private void EmojiButton_Click(object sender, RoutedEventArgs e) => EmojiPopup.IsOpen = !EmojiPopup.IsOpen;
+    private void Emoji_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string emoji }) return;
+        int caret = MessageTextBox.CaretIndex;
+        MessageTextBox.Text = MessageTextBox.Text.Insert(caret, emoji);
+        MessageTextBox.CaretIndex = caret + emoji.Length;
+        MessageTextBox.Focus();
+        EmojiPopup.IsOpen = false;
+    }
 
-        if (string.IsNullOrWhiteSpace(message))
-        {
-            return;
-        }
+    private async void ImageButton_Click(object sender, RoutedEventArgs e) => await ChooseUploadAsync(true);
+    private async void FileButton_Click(object sender, RoutedEventArgs e) => await ChooseUploadAsync(false);
 
+    private async Task ChooseUploadAsync(bool image)
+    {
+        if (_token.Length == 0) return;
+        var dialog = new OpenFileDialog { Filter = image ? "Ảnh|*.png;*.jpg;*.jpeg;*.gif;*.bmp" : "Tất cả file|*.*" };
+        if (dialog.ShowDialog() != true) return;
+        var card = new TransferCard("Gửi " + Path.GetFileName(dialog.FileName));
+        AddChatControl(card);
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(_session.Token);
+        card.CancelAction = cancel.Cancel;
+        string token = _token;
         try
         {
-            NetworkStream stream =
-                _client.GetStream();
-
-            await SendMessageAsync(
-                stream,
-                message);
-
-            // Server will broadcast
-            // the message back to us.
-
-            MessageTextBox.Clear();
-
-            MessageTextBox.Focus();
+            long size = new FileInfo(dialog.FileName).Length;
+            if (image)
+            {
+                if (size > TransferProtocol.MaxImageSize) throw new InvalidDataException("Ảnh tối đa 20 MB.");
+                card.ShowPreview(await Task.Run(() => LoadPreview(dialog.FileName), cancel.Token));
+            }
+            // The event handler yields here; another image/file can be sent immediately.
+            await Task.Run(() => TransferProtocol.UploadAsync(Host, token, dialog.FileName, image,
+                card.CreateProgress(size), cancel.Token), cancel.Token);
+            card.Finish("Đã gửi lên server • " + TransferCard.FormatSize(size));
         }
-        catch (Exception ex)
-        {
-            MessageBox.Show(
-                $"Failed to send message.\n\n{ex.Message}",
-                "ChatLab",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-
-            await DisconnectAsync(
-                showSystemMessage: true);
-        }
+        catch (OperationCanceledException) { card.Finish("Đã hủy."); }
+        catch (Exception ex) { card.Finish("Gửi thất bại: " + ex.Message); }
     }
 
-
-    // =====================================================
-    // RECEIVE LOOP
-    // =====================================================
-
-    private async Task ReceiveMessagesAsync()
+    private void ShowAttachment(Attachment item)
     {
-        if (_client == null)
+        var card = new TransferCard($"{item.Sender} • {item.Name} • {TransferCard.FormatSize(item.Size)}");
+        card.Finish("Sẵn sàng tải • 4 kết nối song song");
+        card.AddDownload(async () =>
         {
-            return;
-        }
+            var dialog = new SaveFileDialog { FileName = Path.GetFileName(item.Name), Filter = "Tất cả file|*.*" };
+            if (dialog.ShowDialog() == true) await DownloadAsync(item, dialog.FileName, card, false);
+        });
+        AddChatControl(card);
+        if (item.IsImage) _ = PreviewAsync(item, card);
+    }
 
-        TcpClient client =
-            _client;
-
+    private async Task PreviewAsync(Attachment item, TransferCard card)
+    {
         try
         {
-            NetworkStream stream =
-                client.GetStream();
-
-            while (_isConnected)
-            {
-                string? message =
-                    await ReceiveMessageAsync(
-                        stream);
-
-                if (message == null)
-                {
-                    break;
-                }
-
-                if (string.IsNullOrWhiteSpace(message))
-                {
-                    continue;
-                }
-
-                await Dispatcher.InvokeAsync(
-                    () =>
-                    {
-                        ProcessIncomingMessage(
-                            message);
-                    });
-            }
+            Directory.CreateDirectory(_previewDirectory);
+            string path = Path.Combine(_previewDirectory, Guid.NewGuid().ToString("N"));
+            await DownloadAsync(item, path, card, true);
         }
-        catch
-        {
-            // Connection closed.
-        }
-
-        // Only handle unexpected disconnect.
-        if (_isConnected)
-        {
-            await Dispatcher.InvokeAsync(
-                async () =>
-                {
-                    await DisconnectAsync(
-                        showSystemMessage: true);
-                });
-        }
+        catch (Exception ex) { card.Finish("Không xem được ảnh: " + ex.Message); }
     }
 
-
-    // =====================================================
-    // PROCESS MESSAGE
-    // =====================================================
-
-    private void ProcessIncomingMessage(
-        string message)
+    private async Task DownloadAsync(Attachment item, string path, TransferCard card, bool preview)
     {
-        // =================================================
-        // SERVER ASSIGNED NAME
-        // =================================================
-
-        if (message.StartsWith(
-            "[NAME]",
-            StringComparison.Ordinal))
+        if (_token.Length == 0) { card.Finish("Hãy kết nối lại trước khi tải."); return; }
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(_session.Token);
+        card.Start(cancel.Cancel);
+        string token = _token;
+        try
         {
-            string serverUsername =
-                message.Substring(
-                    "[NAME]".Length);
-
-            if (!string.IsNullOrWhiteSpace(
-                serverUsername))
-            {
-                _username =
-                    serverUsername;
-
-                UsernameTextBox.Text =
-                    _username;
-
-                StatusTextBlock.Text =
-                    $"Connected as {_username}";
-            }
-
-            return;
+            await Task.Run(() => TransferProtocol.DownloadAsync(Host, token, item, path,
+                card.CreateProgress(item.Size), cancel.Token), cancel.Token);
+            if (preview) card.ShowPreview(await Task.Run(() => LoadPreview(path), cancel.Token));
+            card.Finish(preview ? "Ảnh đã nhận • SHA-256 OK" : "Đã lưu: " + path + " • SHA-256 OK");
         }
-
-
-        // =================================================
-        // ONLINE USERS
-        // =================================================
-
-        if (message.StartsWith(
-            "[ONLINE]",
-            StringComparison.Ordinal))
-        {
-            string users =
-                message.Substring(
-                    "[ONLINE]".Length);
-
-            string[] onlineUsers =
-                users.Split(
-                    '|',
-                    StringSplitOptions
-                        .RemoveEmptyEntries);
-
-            UpdateOnlineUsers(
-                onlineUsers);
-
-            return;
-        }
-
-
-        // =================================================
-        // SERVER MESSAGE
-        // =================================================
-
-        if (message.StartsWith(
-            "[SERVER]",
-            StringComparison.Ordinal))
-        {
-            string serverMessage =
-                message.Substring(
-                    "[SERVER]".Length);
-
-            AddSystemMessage(
-                serverMessage);
-
-            return;
-        }
-
-
-        // =================================================
-        // NORMAL CHAT MESSAGE
-        // =================================================
-
-        if (message.StartsWith("["))
-        {
-            int closingBracket =
-                message.IndexOf(']');
-
-            if (closingBracket > 1)
-            {
-                string username =
-                    message.Substring(
-                        1,
-                        closingBracket - 1);
-
-                string content =
-                    message.Substring(
-                        closingBracket + 1);
-
-                bool isMine =
-                    string.Equals(
-                        username,
-                        _username,
-                        StringComparison.OrdinalIgnoreCase);
-
-                AddMessageBubble(
-                    username,
-                    content,
-                    isMine);
-
-                return;
-            }
-        }
-
-
-        // =================================================
-        // UNKNOWN MESSAGE
-        // =================================================
-
-        AddSystemMessage(
-            message);
+        catch (OperationCanceledException) { card.Finish("Đã hủy."); }
+        catch (Exception ex) { card.Finish("Tải thất bại: " + ex.Message); }
+        finally { if (preview && File.Exists(path)) File.Delete(path); }
     }
 
-
-    // =====================================================
-    // UPDATE ONLINE USERS
-    // =====================================================
-
-    private void UpdateOnlineUsers(
-        IEnumerable<string> users)
+    private static BitmapImage LoadPreview(string path)
     {
-        OnlineUsersPanel.Children.Clear();
-
-        List<string> userList =
-            users
-                .Where(
-                    x => !string.IsNullOrWhiteSpace(x))
-                .Distinct(
-                    StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-        if (userList.Count == 0)
-        {
-            TextBlock emptyText =
-                new TextBlock
-                {
-                    Text = "No one online",
-
-                    Foreground =
-                        new SolidColorBrush(
-                            Color.FromRgb(
-                                114,
-                                118,
-                                125)),
-
-                    FontSize = 13
-                };
-
-            OnlineUsersPanel.Children.Add(
-                emptyText);
-
-            return;
-        }
-
-        foreach (string username
-                 in userList)
-        {
-            StackPanel userRow =
-                new StackPanel
-                {
-                    Orientation =
-                        Orientation.Horizontal,
-
-                    Margin =
-                        new Thickness(
-                            0,
-                            4,
-                            0,
-                            4)
-                };
-
-            // Green online dot
-
-            Border onlineDot =
-                new Border
-                {
-                    Width = 8,
-
-                    Height = 8,
-
-                    CornerRadius =
-                        new CornerRadius(4),
-
-                    Background =
-                        new SolidColorBrush(
-                            Color.FromRgb(
-                                35,
-                                165,
-                                90)),
-
-                    Margin =
-                        new Thickness(
-                            2,
-                            0,
-                            10,
-                            0),
-
-                    VerticalAlignment =
-                        VerticalAlignment.Center
-                };
-
-
-            // Username
-
-            TextBlock usernameText =
-                new TextBlock
-                {
-                    Text = username,
-
-                    Foreground =
-                        Brushes.White,
-
-                    FontSize = 13,
-
-                    VerticalAlignment =
-                        VerticalAlignment.Center
-                };
-
-            userRow.Children.Add(
-                onlineDot);
-
-            userRow.Children.Add(
-                usernameText);
-
-            OnlineUsersPanel.Children.Add(
-                userRow);
-        }
+        using var file = File.OpenRead(path);
+        var image = new BitmapImage();
+        image.BeginInit();
+        image.CacheOption = BitmapCacheOption.OnLoad;
+        image.DecodePixelWidth = 480;
+        image.StreamSource = file;
+        image.EndInit();
+        image.Freeze();
+        return image;
     }
 
-
-    // =====================================================
-    // CLEAR ONLINE USERS
-    // =====================================================
-
-    private void ClearOnlineUsers()
+    private void AddSystemMessage(string message)
     {
-        OnlineUsersPanel.Children.Clear();
-
-        TextBlock text =
-            new TextBlock
-            {
-                Text = "Not connected",
-
-                Foreground =
-                    new SolidColorBrush(
-                        Color.FromRgb(
-                            114,
-                            118,
-                            125)),
-
-                FontSize = 13
-            };
-
-        OnlineUsersPanel.Children.Add(
-            text);
+        var bubble = new MessageBubble();
+        bubble.SetSystemMessage(message);
+        AddChatControl(bubble);
     }
-
-
-    // =====================================================
-    // ADD MESSAGE BUBBLE
-    // =====================================================
-
-    private void AddMessageBubble(
-        string username,
-        string message,
-        bool isMine)
+    private void AddChatControl(UIElement control)
     {
-        HideWelcomePanel();
-
-        MessageBubble bubble =
-            new MessageBubble();
-
-        bubble.SetMessage(
-            username,
-            message,
-            isMine);
-
-        ChatPanel.Children.Add(
-            bubble);
-
-        ScrollChatToBottom();
-    }
-
-
-    // =====================================================
-    // ADD SYSTEM MESSAGE
-    // =====================================================
-
-    private void AddSystemMessage(
-        string message)
-    {
-        HideWelcomePanel();
-
-        MessageBubble bubble =
-            new MessageBubble();
-
-        bubble.SetSystemMessage(
-            message);
-
-        ChatPanel.Children.Add(
-            bubble);
-
-        ScrollChatToBottom();
-    }
-
-
-    // =====================================================
-    // HIDE WELCOME
-    // =====================================================
-
-    private void HideWelcomePanel()
-    {
-        WelcomePanel.Visibility =
-            Visibility.Collapsed;
-    }
-
-
-    // =====================================================
-    // AUTO SCROLL
-    // =====================================================
-
-    private void ScrollChatToBottom()
-    {
+        WelcomePanel.Visibility = Visibility.Collapsed;
+        ChatPanel.Children.Add(control);
         ChatScrollViewer.ScrollToEnd();
     }
-
-
-    // =====================================================
-    // ENTER TO SEND
-    // =====================================================
-
-    private async void MessageTextBox_KeyDown(
-        object sender,
-        KeyEventArgs e)
+    protected override void OnClosed(EventArgs e)
     {
-        if (e.Key == Key.Enter)
-        {
-            e.Handled = true;
-
-            await SendChatMessageAsync();
-        }
-    }
-
-
-    // =====================================================
-    // EMOJI BUTTON
-    // =====================================================
-
-    private void EmojiButton_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        EmojiPopup.IsOpen =
-            !EmojiPopup.IsOpen;
-    }
-
-
-    // =====================================================
-    // SELECT EMOJI
-    // =====================================================
-
-    private void Emoji_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        if (sender is not Button button)
-        {
-            return;
-        }
-
-        string emoji =
-            button.Tag?.ToString() ?? "";
-
-        if (string.IsNullOrEmpty(emoji))
-        {
-            return;
-        }
-
-        int caretIndex =
-            MessageTextBox.CaretIndex;
-
-        MessageTextBox.Text =
-            MessageTextBox.Text.Insert(
-                caretIndex,
-                emoji);
-
-        MessageTextBox.CaretIndex =
-            caretIndex + emoji.Length;
-
-        MessageTextBox.Focus();
-
-        EmojiPopup.IsOpen =
-            false;
-    }
-
-
-    // =====================================================
-    // SEND FRAMED MESSAGE
-    // =====================================================
-
-    private async Task SendMessageAsync(
-        NetworkStream stream,
-        string message)
-    {
-        byte[] messageBytes =
-            Encoding.UTF8.GetBytes(
-                message);
-
-        byte[] lengthBytes =
-            BitConverter.GetBytes(
-                messageBytes.Length);
-
-        await stream.WriteAsync(
-            lengthBytes);
-
-        await stream.WriteAsync(
-            messageBytes);
-    }
-
-
-    // =====================================================
-    // RECEIVE FRAMED MESSAGE
-    // =====================================================
-
-    private async Task<string?> ReceiveMessageAsync(
-        NetworkStream stream)
-    {
-        byte[] lengthBuffer =
-            new byte[sizeof(int)];
-
-        bool lengthReceived =
-            await ReadExactlyAsync(
-                stream,
-                lengthBuffer);
-
-        if (!lengthReceived)
-        {
-            return null;
-        }
-
-        int messageLength =
-            BitConverter.ToInt32(
-                lengthBuffer,
-                0);
-
-        if (messageLength <= 0 ||
-            messageLength > 1024 * 1024)
-        {
-            throw new InvalidOperationException(
-                "Invalid message length.");
-        }
-
-        byte[] messageBuffer =
-            new byte[messageLength];
-
-        bool messageReceived =
-            await ReadExactlyAsync(
-                stream,
-                messageBuffer);
-
-        if (!messageReceived)
-        {
-            return null;
-        }
-
-        return Encoding.UTF8.GetString(
-            messageBuffer);
-    }
-
-
-    // =====================================================
-    // READ EXACTLY N BYTES
-    // =====================================================
-
-    private async Task<bool> ReadExactlyAsync(
-        NetworkStream stream,
-        byte[] buffer)
-    {
-        int totalBytesRead = 0;
-
-        while (totalBytesRead <
-               buffer.Length)
-        {
-            int bytesRead =
-                await stream.ReadAsync(
-                    buffer.AsMemory(
-                        totalBytesRead,
-                        buffer.Length -
-                        totalBytesRead));
-
-            if (bytesRead == 0)
-            {
-                return false;
-            }
-
-            totalBytesRead +=
-                bytesRead;
-        }
-
-        return true;
-    }
-
-
-    // =====================================================
-    // WINDOW CLOSED
-    // =====================================================
-
-    protected override void OnClosed(
-        EventArgs e)
-    {
-        try
-        {
-            _isConnected = false;
-
-            _client?.Close();
-
-            _client?.Dispose();
-
-            _client = null;
-        }
-        catch
-        {
-        }
-
+        Disconnect();
         base.OnClosed(e);
     }
 }

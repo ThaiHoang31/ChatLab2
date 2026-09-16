@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -51,8 +51,7 @@ public partial class MessageBubble : UserControl
         MyMessageContainer.Visibility =
             Visibility.Visible;
 
-        MyMessageText.Text =
-            message;
+        ColorEmoji.SetText(MyMessageText, message);
 
         MyUsernameText.Text =
             username;
@@ -80,8 +79,7 @@ public partial class MessageBubble : UserControl
         OtherUsernameText.Text =
             username;
 
-        OtherMessageText.Text =
-            message;
+        ColorEmoji.SetText(OtherMessageText, message);
 
         OtherTimestampText.Text =
             DateTime.Now.ToString(

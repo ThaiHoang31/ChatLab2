@@ -13,6 +13,48 @@
         WindowStartupLocation="CenterScreen"
         Background="#F5F7FA">
 
+    <Window.Resources>
+        <Style x:Key="AttachmentButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#F0EBFA"/>
+            <Setter Property="Foreground" Value="#6541A5"/>
+            <Setter Property="BorderBrush" Value="#E2D7F3"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,9"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonSurface" CornerRadius="9"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#E6DAF7"/>
+                                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#B99ADC"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#6C4AB6"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#D8C5EF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.45"/>
+                                <Setter Property="Cursor" Value="Arrow"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid>
 
         <!-- ================================================= -->
@@ -191,7 +233,7 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="70"/>
                 <RowDefinition Height="*"/>
-                <RowDefinition Height="120"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
 
@@ -295,6 +337,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -303,18 +346,52 @@
                     </Grid.ColumnDefinitions>
 
 
-                    <StackPanel Grid.Row="1" Grid.ColumnSpan="3"
+                    <Border x:Name="PendingImagePanel" Grid.Row="0" Grid.ColumnSpan="3"
+                            Visibility="Collapsed" Background="#F3F4F6" CornerRadius="10"
+                            Padding="8" Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal">
+                            <Grid Width="88" Height="80">
+                                <Image x:Name="PendingImagePreview" Width="72" Height="72" Stretch="UniformToFill"/>
+                                <Button Content="×" Width="24" Height="24" HorizontalAlignment="Right"
+                                        VerticalAlignment="Top" ToolTip="Bỏ ảnh đã chọn" Click="RemovePendingImage_Click"/>
+                            </Grid>
+                            <TextBlock x:Name="PendingImageName" VerticalAlignment="Center" Margin="12,0"
+                                       MaxWidth="340" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Border>
+                    <StackPanel Grid.Row="2" Grid.ColumnSpan="3"
                                 Orientation="Horizontal" Margin="0,8,0,0">
-                        <Button x:Name="ImageButton" Content="Gửi ảnh"
-                                Padding="12,3" Click="ImageButton_Click"/>
-                        <Button x:Name="FileButton" Content="Gửi file (500 MB+)"
-                                Padding="12,3" Margin="8,0,0,0" Click="FileButton_Click"/>
+                        <Button x:Name="ImageButton" Style="{StaticResource AttachmentButtonStyle}"
+                                ToolTip="Chọn ảnh để xem trước khi gửi" AutomationProperties.Name="Chọn ảnh"
+                                Click="ImageButton_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Width="16" Height="16" Margin="0,0,8,0" Stretch="Uniform"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.6" StrokeLineJoin="Round"
+                                      Data="M2,2 L18,2 18,18 2,18 Z M2,14 L7,9 11,13 14,10 18,14 M12,6 A1,1 0 1 0 14,6 A1,1 0 1 0 12,6"/>
+                                <TextBlock Text="Chọn ảnh" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="FileButton" Style="{StaticResource AttachmentButtonStyle}"
+                                Margin="8,0,0,0" ToolTip="Gửi file lớn đến 10 GB" AutomationProperties.Name="Gửi file"
+                                Click="FileButton_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Width="16" Height="16" Margin="0,0,8,0" Stretch="Uniform"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.6" StrokeLineJoin="Round"
+                                      Data="M4,1 L12,1 17,6 17,19 4,19 Z M12,1 L12,6 17,6 M7,11 L14,11 M7,15 L12,15"/>
+                                <TextBlock Text="Gửi file" VerticalAlignment="Center"/>
+                                <Border Background="#E2D7F3" CornerRadius="4" Padding="5,1" Margin="8,0,0,0">
+                                    <TextBlock Text="500 MB+" FontSize="10" VerticalAlignment="Center"/>
+                                </Border>
+                            </StackPanel>
+                        </Button>
                         <TextBlock Text="Có thể gửi ảnh khi file đang truyền"
                                    VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#72767D"/>
                     </StackPanel>
 
                     <Button
-                        x:Name="EmojiButton"
+                        Grid.Row="1" x:Name="EmojiButton"
                         Grid.Column="0"
                         Width="42"
                         Height="42"
@@ -329,7 +406,7 @@
                     <!-- MESSAGE INPUT -->
 
                     <TextBox
-                        x:Name="MessageTextBox"
+                        Grid.Row="1" x:Name="MessageTextBox"
                         Grid.Column="1"
                         Height="42"
                         Padding="12,10"
@@ -344,7 +421,7 @@
                     <!-- SEND BUTTON -->
 
                     <Button
-                        x:Name="SendButton"
+                        Grid.Row="1" x:Name="SendButton"
                         Grid.Column="2"
                         Width="80"
                         Height="42"

@@ -21,13 +21,26 @@ internal static class Program
         var own = new MessageBubble();
         own.SetMessage("Bob", "Đang gửi file, vẫn gửi được ảnh! 😊 ❤️", true);
         panel.Children.Add(own);
-        var file = new TransferCard("Gửi bài-thực-hành.zip • 512 MB");
+        var file = new TransferCard("Bạn • bài-thực-hành.zip • 512 MB", isMine: true);
         file.Start(() => { });
         panel.Children.Add(file);
+        // Simulate the server echo before/after upload acknowledgement: no second card.
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        typeof(MainWindow).GetField("_username", flags)!.SetValue(window, "Bob");
+        var showAttachment = typeof(MainWindow).GetMethod("ShowAttachment", flags)!;
+        int countBeforeEcho = panel.Children.Count;
+        foreach (bool isImage in new[] { false, true })
+            showAttachment.Invoke(window, [new ChatLab.Attachment("own", "same-name", 10, isImage, "Bob", "hash")]);
+        if (panel.Children.Count != countBeforeEcho || file.HorizontalAlignment != HorizontalAlignment.Right)
+            throw new Exception("Outgoing attachments must keep one right-aligned card.");
+        showAttachment.Invoke(window, [new ChatLab.Attachment("other", "received.zip", 10, false, "Alice", "hash")]);
+        if (panel.Children.Count != countBeforeEcho + 1 ||
+            ((TransferCard)panel.Children[panel.Children.Count - 1]).HorizontalAlignment != HorizontalAlignment.Left)
+            throw new Exception("Incoming attachment must remain on the left.");
         var image = new TransferCard("Alice • ảnh.png");
         image.ShowPreview(((Image)ColorEmoji.CreateImage("😍", 160)).Source);
         image.Finish("Ảnh đã nhận • SHA-256 OK");
-        image.AddDownload(() => Task.CompletedTask);
+        image.AddDownload(() => Task.CompletedTask, imageOnly: true);
         panel.Children.Add(image);
         content.Measure(new Size(1100, 700));
         content.Arrange(new Rect(0, 0, 1100, 700));

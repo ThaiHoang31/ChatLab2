@@ -54,7 +54,11 @@ async Task HandleClientAsync(TcpClient socket)
         while (true)
         {
             string message = (await ReceiveAsync(stream)).Trim();
-            if (message.Length > 0) await BroadcastAsync($"[{name}]{message}");
+            if (message.Length > 0)
+            {
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {name}: {message}");
+                await BroadcastAsync($"[{name}]{message}");
+            }
         }
     }
     catch (Exception ex) { Console.WriteLine($"Chat closed: {ex.Message}"); }

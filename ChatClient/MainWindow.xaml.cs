@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private const string Host = "127.0.0.1";
     private TcpClient? _client;
     private string _username = "", _token = "";
+    private string? _pendingImagePath;
     private CancellationTokenSource _session = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly string _previewDirectory = Path.Combine(Path.GetTempPath(), "ChatLab", Guid.NewGuid().ToString("N"));
@@ -84,6 +85,7 @@ public partial class MainWindow : Window
 
     private void Disconnect()
     {
+        ClearPendingImage();
         _session.Cancel();
         _client?.Dispose();
         _client = null;
@@ -170,10 +172,19 @@ public partial class MainWindow : Window
     private async Task SendChatMessageAsync()
     {
         var client = _client;
-        if (client == null || string.IsNullOrWhiteSpace(MessageTextBox.Text)) return;
+        if (client == null) return;
         string text = MessageTextBox.Text.Trim();
+        string? imagePath = _pendingImagePath;
+        if (text.Length == 0 && imagePath == null) return;
+        ClearPendingImage();
         MessageTextBox.Clear();
-        try { await SendMessageAsync(client.GetStream(), text, _session.Token); }
+        try
+        {
+            var sends = new List<Task>();
+            if (text.Length > 0) sends.Add(SendMessageAsync(client.GetStream(), text, _session.Token));
+            if (imagePath != null) sends.Add(UploadFileAsync(imagePath, true));
+            await Task.WhenAll(sends);
+        }
         catch (Exception ex) { AddSystemMessage("Gửi thất bại: " + ex.Message); }
     }
 
@@ -193,7 +204,38 @@ public partial class MainWindow : Window
         EmojiPopup.IsOpen = false;
     }
 
-    private async void ImageButton_Click(object sender, RoutedEventArgs e) => await ChooseUploadAsync(true);
+    private async void ImageButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_token.Length == 0) return;
+        var dialog = new OpenFileDialog { Filter = "Ảnh|*.png;*.jpg;*.jpeg;*.gif;*.bmp" };
+        if (dialog.ShowDialog() != true) return;
+        var session = _session;
+        ImageButton.IsEnabled = false;
+        try
+        {
+            if (new FileInfo(dialog.FileName).Length > TransferProtocol.MaxImageSize)
+                throw new InvalidDataException("Ảnh tối đa 20 MB.");
+            var preview = await Task.Run(() => LoadPreview(dialog.FileName), session.Token);
+            if (session.IsCancellationRequested) return;
+            _pendingImagePath = dialog.FileName;
+            PendingImagePreview.Source = preview;
+            PendingImageName.Text = Path.GetFileName(dialog.FileName);
+            PendingImagePanel.Visibility = Visibility.Visible;
+            MessageTextBox.Focus();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { MessageBox.Show("Không chọn được ảnh: " + ex.Message); }
+        finally { ImageButton.IsEnabled = _token.Length > 0; }
+    }
+
+    private void RemovePendingImage_Click(object sender, RoutedEventArgs e) => ClearPendingImage();
+    private void ClearPendingImage()
+    {
+        _pendingImagePath = null;
+        PendingImagePreview.Source = null;
+        PendingImageName.Text = "";
+        PendingImagePanel.Visibility = Visibility.Collapsed;
+    }
     private async void FileButton_Click(object sender, RoutedEventArgs e) => await ChooseUploadAsync(false);
 
     private async Task ChooseUploadAsync(bool image)
@@ -201,23 +243,29 @@ public partial class MainWindow : Window
         if (_token.Length == 0) return;
         var dialog = new OpenFileDialog { Filter = image ? "Ảnh|*.png;*.jpg;*.jpeg;*.gif;*.bmp" : "Tất cả file|*.*" };
         if (dialog.ShowDialog() != true) return;
-        var card = new TransferCard("Gửi " + Path.GetFileName(dialog.FileName));
+        await UploadFileAsync(dialog.FileName, image);
+    }
+
+    private async Task UploadFileAsync(string path, bool image)
+    {
+        var card = new TransferCard("Bạn • " + Path.GetFileName(path), isMine: true);
         AddChatControl(card);
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(_session.Token);
         card.CancelAction = cancel.Cancel;
         string token = _token;
         try
         {
-            long size = new FileInfo(dialog.FileName).Length;
+            long size = new FileInfo(path).Length;
             if (image)
             {
                 if (size > TransferProtocol.MaxImageSize) throw new InvalidDataException("Ảnh tối đa 20 MB.");
-                card.ShowPreview(await Task.Run(() => LoadPreview(dialog.FileName), cancel.Token));
+                card.ShowPreview(await Task.Run(() => LoadPreview(path), cancel.Token));
             }
             // The event handler yields here; another image/file can be sent immediately.
-            await Task.Run(() => TransferProtocol.UploadAsync(Host, token, dialog.FileName, image,
+            var item = await Task.Run(() => TransferProtocol.UploadAsync(Host, token, path, image,
                 card.CreateProgress(size), cancel.Token), cancel.Token);
             card.Finish("Đã gửi lên server • " + TransferCard.FormatSize(size));
+            AddSaveAction(item, card);
         }
         catch (OperationCanceledException) { card.Finish("Đã hủy."); }
         catch (Exception ex) { card.Finish("Gửi thất bại: " + ex.Message); }
@@ -225,15 +273,24 @@ public partial class MainWindow : Window
 
     private void ShowAttachment(Attachment item)
     {
+        // The sender already has an upload card (with progress and local image preview).
+        // Server broadcasts also reach the sender; do not create a second received card.
+        if (string.Equals(item.Sender, _username, StringComparison.OrdinalIgnoreCase)) return;
+
         var card = new TransferCard($"{item.Sender} • {item.Name} • {TransferCard.FormatSize(item.Size)}");
         card.Finish("Sẵn sàng tải • 4 kết nối song song");
+        AddSaveAction(item, card);
+        AddChatControl(card);
+        if (item.IsImage) _ = PreviewAsync(item, card);
+    }
+
+    private void AddSaveAction(Attachment item, TransferCard card)
+    {
         card.AddDownload(async () =>
         {
             var dialog = new SaveFileDialog { FileName = Path.GetFileName(item.Name), Filter = "Tất cả file|*.*" };
             if (dialog.ShowDialog() == true) await DownloadAsync(item, dialog.FileName, card, false);
-        });
-        AddChatControl(card);
-        if (item.IsImage) _ = PreviewAsync(item, card);
+        }, imageOnly: item.IsImage);
     }
 
     private async Task PreviewAsync(Attachment item, TransferCard card)
